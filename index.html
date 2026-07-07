@@ -556,6 +556,102 @@ a:hover{text-decoration:underline;color:#0a3870}
 </div><!-- /app -->
 
 <script>
+
+// ══════════════════════════════════════════════════════════════
+//  COUCHE DE SYNCHRONISATION — Google Apps Script
+//  Remplacez VOTRE_URL_ICI par l'URL de votre déploiement Apps Script
+// ══════════════════════════════════════════════════════════════
+const SYNC_API_URL = 'https://script.google.com/macros/s/AKfycbxGyA60kQqCr70pjj9XRpGFEuWx8jLpt-s5gh5igfTGcEZji36juCyg18scNcPdSRhWDA/exec';
+const SYNC_KEYS = [
+  'bts3_candDB','bts3_classBlockLabels','bts3_customTabs','bts3_edt',
+  'bts3_hdrInfo','bts3_intervLabels','bts3_presFileInfo','bts3_projDB',
+  'bts3_slots1diet','bts3_slots2diet','bts3_stuDB','bts3_stuOverrides',
+  'bts3_tabLabels','bts3_tabsVisible','bts3_dgeData','bts3_pres'
+];
+const SYNC_INTERVAL = 30000; // 30 secondes
+let _syncEnabled = SYNC_API_URL !== 'VOTRE_URL_ICI';
+let _syncTimer = null;
+let _lastSync = 0;
+
+// Afficher le statut de sync dans la bannière
+function setSyncBadge(msg, color) {
+  const b = document.getElementById('sync-badge');
+  if (b) { b.textContent = msg; b.style.background = color || 'rgba(255,255,255,.18)'; }
+}
+
+// ── PUSH : envoyer toutes les données vers Google Sheets ──
+async function syncPush() {
+  if (!_syncEnabled) return;
+  const data = {};
+  SYNC_KEYS.forEach(k => {
+    const v = localStorage.getItem(k);
+    if (v) data[k] = v;
+  });
+  try {
+    setSyncBadge('🔄 Sync…', 'rgba(255,200,50,.3)');
+    const r = await fetch(SYNC_API_URL, {
+      method: 'POST', mode: 'cors',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ action: 'setMultiple', data })
+    });
+    const d = await r.json();
+    if (d.success) {
+      _lastSync = Date.now();
+      setSyncBadge('✅ Synchronisé ' + new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}), 'rgba(34,197,94,.3)');
+    } else {
+      setSyncBadge('⚠️ Erreur sync', 'rgba(239,68,68,.3)');
+    }
+  } catch(e) {
+    setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)');
+  }
+}
+
+// ── PULL : récupérer les données depuis Google Sheets ──
+async function syncPull() {
+  if (!_syncEnabled) { setSyncBadge('💾 Local uniquement', 'rgba(255,255,255,.15)'); return; }
+  try {
+    setSyncBadge('🔄 Chargement…', 'rgba(255,200,50,.3)');
+    const r = await fetch(SYNC_API_URL + '?action=getAll', { mode: 'cors' });
+    const d = await r.json();
+    if (d.success && d.data) {
+      let updated = 0;
+      SYNC_KEYS.forEach(k => {
+        if (d.data[k] && d.data[k].value) {
+          localStorage.setItem(k, d.data[k].value);
+          updated++;
+        }
+      });
+      _lastSync = Date.now();
+      setSyncBadge('✅ ' + updated + ' clés chargées', 'rgba(34,197,94,.3)');
+      return true;
+    }
+  } catch(e) {
+    setSyncBadge('📴 Hors ligne — données locales', 'rgba(156,163,175,.3)');
+  }
+  return false;
+}
+
+// ── Démarrer la synchronisation automatique ──
+function startSync() {
+  if (!_syncEnabled) {
+    setSyncBadge('💾 Mode local', 'rgba(255,255,255,.15)');
+    return;
+  }
+  // Pull au démarrage pour charger les dernières données
+  syncPull().then(ok => {
+    if (ok) {
+      // Recharger l'interface avec les nouvelles données
+      loadAll();
+      render();
+    }
+  });
+  // Push automatique toutes les 30 secondes
+  _syncTimer = setInterval(() => syncPush(), SYNC_INTERVAL);
+}
+
+// ── Surcharger sv() pour push automatique à chaque sauvegarde ──
+const _origSv = typeof sv === 'function' ? sv : null;
+
 // ═══════════════════════════════════════════
 //   CONFIGURATIONS DES ONGLETS
 // ═══════════════════════════════════════════
@@ -5675,6 +5771,14 @@ initDB().then(()=>{
  render();
  if(!window._hdrSubtitleCustom)document.getElementById('hdryear').textContent=`Année scolaire ${S.data.presentation.annee||'2024-2025'}`;
 });
+// Démarrer la synchronisation
+startSync();
+// Push après chaque sauvegarde (debounce 2s)
+const _svOrigSync=sv;
+sv=function(tab){
+ _svOrigSync(tab);
+ if(_syncEnabled){clearTimeout(window._pushDebounce);window._pushDebounce=setTimeout(syncPush,2000);}
+};
 // ══════════════════════════════════════════════
 
 </script>
