@@ -606,7 +606,7 @@ async function syncPush(silent) {
   SYNC_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v) data[k] = v; });
   if (!silent) setSyncBadge('🔄 Sync…', 'rgba(255,200,50,.3)');
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
   try {
     await fetch(SYNC_API_URL, {
       method: 'POST',
@@ -641,7 +641,7 @@ async function syncPull(silent) {
   if (!navigator.onLine) { setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)'); return false; }
   if (!silent) setSyncBadge('🔄 Chargement…', 'rgba(255,200,50,.3)');
   const controller = new AbortController();
-  const timeoutId = setTimeout(() => controller.abort(), 10000);
+  const timeoutId = setTimeout(() => controller.abort(), 20000);
   try {
     const r = await fetch(SYNC_API_URL + '?action=getAll&t=' + Date.now(), { signal: controller.signal });
     clearTimeout(timeoutId);
