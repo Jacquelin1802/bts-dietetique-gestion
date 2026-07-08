@@ -602,53 +602,80 @@ async function syncPush() {
 }
 
 // ── PULL : récupérer les données depuis Google Sheets ──
+// Renvoie true = pull confirmé réussi, false = échec (ne JAMAIS pousser après un false)
 async function syncPull() {
   if (!_syncEnabled) { setSyncBadge('💾 Local uniquement', 'rgba(255,255,255,.15)'); return false; }
   if (!navigator.onLine) { setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)'); return false; }
   setSyncBadge('🔄 Chargement…', 'rgba(255,200,50,.3)');
   try {
     const r = await fetch(SYNC_API_URL + '?action=getAll&t=' + Date.now());
-    const d = await r.json();
-    if (d && d.success && d.data) {
-      let updated = 0;
-      SYNC_KEYS.forEach(k => {
-        const remoteEntry = d.data[k];
-        if (!remoteEntry || !remoteEntry.value) return;
-        const localVal = localStorage.getItem(k);
-        // Si pas de donnée locale → prendre la donnée distante
-        if (!localVal) {
-          localStorage.setItem(k, remoteEntry.value);
-          updated++;
-          return;
-        }
-        // Comparer les tailles : garder la plus volumineuse (= la plus complète)
-        // ET pousser les données locales vers le Sheet si elles sont plus récentes
-        if (remoteEntry.value.length > localVal.length) {
-          localStorage.setItem(k, remoteEntry.value);
-          updated++;
-        }
-        // Si local plus grand → on garde local, le push va l'envoyer au Sheet
-      });
-      _lastSync = Date.now();
-      setSyncBadge('✅ ' + updated + ' clés chargées', 'rgba(34,197,94,.3)');
-      return true;
+    if (!r.ok) {
+      console.error('[sync] HTTP', r.status, 'lors du pull');
+      setSyncBadge('⚠️ Erreur serveur (' + r.status + ')', 'rgba(239,68,68,.35)');
+      return false;
     }
+    let d;
+    try { d = await r.json(); }
+    catch(parseErr) {
+      console.error('[sync] Réponse non-JSON reçue lors du pull :', parseErr);
+      setSyncBadge('⚠️ Réponse invalide du serveur', 'rgba(239,68,68,.35)');
+      return false;
+    }
+    if (!d || !d.success || !d.data) {
+      console.error('[sync] Pull sans succès, réponse :', d);
+      setSyncBadge('⚠️ Pull échoué (voir console)', 'rgba(239,68,68,.35)');
+      return false;
+    }
+    let updated = 0;
+    SYNC_KEYS.forEach(k => {
+      const remoteEntry = d.data[k];
+      if (!remoteEntry || !remoteEntry.value) return;
+      const localVal = localStorage.getItem(k);
+      if (!localVal) {
+        localStorage.setItem(k, remoteEntry.value);
+        updated++;
+        return;
+      }
+      if (remoteEntry.value.length > localVal.length) {
+        localStorage.setItem(k, remoteEntry.value);
+        updated++;
+      }
+    });
+    _lastSync = Date.now();
+    setSyncBadge('✅ ' + updated + ' clés chargées', 'rgba(34,197,94,.3)');
+    return true;
   } catch(e) {
+    console.error('[sync] Exception réseau lors du pull (probablement CORS) :', e);
     setSyncBadge('📴 Hors ligne — données locales', 'rgba(156,163,175,.3)');
+    return false;
   }
-  return false;
 }
 
 // ── Démarrer la synchronisation ──
+// RÈGLE D'OR : on ne pousse (syncPush) JAMAIS tant que le premier pull n'a pas
+// clairement réussi. Pousser après un pull raté écraserait les données distantes
+// avec les valeurs locales par défaut (c'était le bug : badge "Synchronisé" alors
+// que les vraies données du Sheet venaient d'être remplacées par les placeholders).
+let _firstPullDone = false;
 function startSync() {
   if (!_syncEnabled) { setSyncBadge('💾 Mode local', 'rgba(255,255,255,.15)'); return; }
-  window.addEventListener('online',  function() { setSyncBadge('🔄 Reconnexion…','rgba(255,200,50,.3)'); syncPull().then(ok=>{ if(ok){loadAll();render();} syncPush(); }); });
+  window.addEventListener('online',  function() {
+    setSyncBadge('🔄 Reconnexion…','rgba(255,200,50,.3)');
+    syncPull().then(ok=>{ if(ok){ loadAll(); render(); _firstPullDone=true; syncPush(); } });
+  });
   window.addEventListener('offline', function() { setSyncBadge('📴 Hors ligne','rgba(156,163,175,.3)'); });
   syncPull().then(function(ok) {
-    if (ok) { loadAll(); render(); }
-    if (navigator.onLine) syncPush();
+    if (ok) {
+      loadAll(); render();
+      _firstPullDone = true;
+      if (navigator.onLine) syncPush();
+    }
+    // si le pull échoue au démarrage, on NE POUSSE RIEN : on attend une
+    // réussite avant d'autoriser le moindre envoi vers le Sheet.
   });
-  _syncTimer = setInterval(function() { if (navigator.onLine) syncPush(); }, SYNC_INTERVAL);
+  _syncTimer = setInterval(function() {
+    if (navigator.onLine && _firstPullDone) syncPush();
+  }, SYNC_INTERVAL);
 }
 
 // ── Surcharger sv() pour push automatique à chaque sauvegarde ──
