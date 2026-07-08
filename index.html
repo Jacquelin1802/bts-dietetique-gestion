@@ -588,12 +588,15 @@ function setSyncBadge(msg, color) {
 }
 
 // ── PUSH : envoyer les données vers Google Sheets ──
-async function syncPush() {
+// silent=true : utilisé pour les vérifications automatiques en arrière-plan,
+// n'affiche pas l'état intermédiaire "Sync…" pour éviter un badge qui
+// clignote sans arrêt. Les vraies actions utilisateur (pushNow) restent visibles.
+async function syncPush(silent) {
   if (!_syncEnabled) return;
   if (!navigator.onLine) { setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)'); return; }
   const data = {};
   SYNC_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v) data[k] = v; });
-  setSyncBadge('🔄 Sync…', 'rgba(255,200,50,.3)');
+  if (!silent) setSyncBadge('🔄 Sync…', 'rgba(255,200,50,.3)');
   try {
     await fetch(SYNC_API_URL, {
       method: 'POST',
@@ -610,10 +613,10 @@ async function syncPush() {
 
 // ── PULL : récupérer les données depuis Google Sheets ──
 // Renvoie true = pull confirmé réussi, false = échec (ne JAMAIS pousser après un false)
-async function syncPull() {
+async function syncPull(silent) {
   if (!_syncEnabled) { setSyncBadge('💾 Local uniquement', 'rgba(255,255,255,.15)'); return false; }
   if (!navigator.onLine) { setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)'); return false; }
-  setSyncBadge('🔄 Chargement…', 'rgba(255,200,50,.3)');
+  if (!silent) setSyncBadge('🔄 Chargement…', 'rgba(255,200,50,.3)');
   try {
     const r = await fetch(SYNC_API_URL + '?action=getAll&t=' + Date.now());
     if (!r.ok) {
@@ -657,7 +660,9 @@ async function syncPull() {
       }
     });
     _lastSync = Date.now();
-    setSyncBadge('✅ ' + updated + ' clés chargées', 'rgba(34,197,94,.3)');
+    if (!silent || updated > 0) {
+      setSyncBadge(updated > 0 ? ('✅ ' + updated + ' clés chargées') : ('✅ Synchronisé ' + new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})), 'rgba(34,197,94,.3)');
+    }
     return true;
   } catch(e) {
     console.error('[sync] Exception réseau lors du pull (probablement CORS) :', e);
@@ -695,7 +700,7 @@ function startSync() {
   // (déverrouillage du téléphone, retour sur l'onglet...).
   document.addEventListener('visibilitychange', function() {
     if (document.visibilityState === 'visible' && navigator.onLine) {
-      syncPull().then(function(ok) {
+      syncPull(true).then(function(ok) {
         if (!ok) return;
         loadAll();
         const modalEl = document.getElementById('person-modal');
@@ -714,7 +719,7 @@ function startSync() {
     // réussite avant d'autoriser le moindre envoi vers le Sheet.
   });
   _syncTimer = setInterval(function() {
-    if (navigator.onLine && _firstPullDone) syncPush();
+    if (navigator.onLine && _firstPullDone) syncPush(true);
   }, SYNC_INTERVAL);
   // ── Pull périodique : pour que les modifications faites sur UN AUTRE
   // appareil (téléphone, autre poste...) remontent aussi automatiquement
@@ -723,7 +728,7 @@ function startSync() {
   // pas perturber une saisie en cours.
   _pullTimer = setInterval(function() {
     if (!navigator.onLine) return;
-    syncPull().then(function(ok) {
+    syncPull(true).then(function(ok) {
       if (!ok) return;
       loadAll();
       const modalEl = document.getElementById('person-modal');
