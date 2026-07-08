@@ -572,6 +572,7 @@ const SYNC_KEYS = [
 const SYNC_INTERVAL = 15000; // 15 secondes
 let _syncEnabled = true; // URL Apps Script configurée
 let _syncTimer = null;
+let _pullTimer = null;
 let _lastSync = 0;
 
 // Afficher le statut de sync dans la bannière
@@ -651,6 +652,15 @@ async function syncPull() {
   }
 }
 
+// ── Déclencheur d'envoi immédiat, utilisé par toutes les fonctions save*() ──
+// Contrairement à la minuterie de 15s, celui-ci ne dépend PAS de _firstPullDone :
+// une sauvegarde explicite de l'utilisateur doit partir tout de suite.
+function pushNow(){
+ if (typeof _syncEnabled!=='undefined' && _syncEnabled && navigator.onLine && typeof syncPush==='function') {
+  syncPush();
+ }
+}
+
 // ── Démarrer la synchronisation ──
 // RÈGLE D'OR : on ne pousse (syncPush) JAMAIS tant que le premier pull n'a pas
 // clairement réussi. Pousser après un pull raté écraserait les données distantes
@@ -664,6 +674,21 @@ function startSync() {
     syncPull().then(ok=>{ if(ok){ loadAll(); render(); _firstPullDone=true; syncPush(); } });
   });
   window.addEventListener('offline', function() { setSyncBadge('📴 Hors ligne','rgba(156,163,175,.3)'); });
+  // Les navigateurs mobiles mettent en pause les minuteries (setInterval)
+  // quand l'écran se verrouille ou qu'on change d'appli. On compense en
+  // forçant une vérification immédiate dès que l'onglet redevient visible
+  // (déverrouillage du téléphone, retour sur l'onglet...).
+  document.addEventListener('visibilitychange', function() {
+    if (document.visibilityState === 'visible' && navigator.onLine) {
+      syncPull().then(function(ok) {
+        if (!ok) return;
+        loadAll();
+        const modalEl = document.getElementById('person-modal');
+        const modalOpen = modalEl && modalEl.innerHTML.trim().length > 0;
+        if (!modalOpen) render();
+      });
+    }
+  });
   syncPull().then(function(ok) {
     if (ok) {
       loadAll(); render();
@@ -676,6 +701,21 @@ function startSync() {
   _syncTimer = setInterval(function() {
     if (navigator.onLine && _firstPullDone) syncPush();
   }, SYNC_INTERVAL);
+  // ── Pull périodique : pour que les modifications faites sur UN AUTRE
+  // appareil (téléphone, autre poste...) remontent aussi automatiquement
+  // ici, sans avoir à recharger la page manuellement. On évite de
+  // ré-afficher (render) si une fiche est en cours d'édition, pour ne
+  // pas perturber une saisie en cours.
+  _pullTimer = setInterval(function() {
+    if (!navigator.onLine) return;
+    syncPull().then(function(ok) {
+      if (!ok) return;
+      loadAll();
+      const modalEl = document.getElementById('person-modal');
+      const modalOpen = modalEl && modalEl.innerHTML.trim().length > 0;
+      if (!modalOpen) render();
+    });
+  }, 20000);
 }
 
 // ── Surcharger sv() pour push automatique à chaque sauvegarde ──
@@ -1061,6 +1101,7 @@ function sv(k){
   else if(k==='tabsVisible')localStorage.setItem('bts3_tabsVisible',JSON.stringify(S.tabsVisible));
   else if(k==='customTabs')localStorage.setItem('bts3_customTabs',JSON.stringify(S.customTabs));
   else localStorage.setItem('bts3_'+k,JSON.stringify(S.data[k]));
+  if(typeof pushNow==='function')pushNow();
  }catch(e){console.warn('Erreur de sauvegarde',e);}
 }
 
@@ -1401,7 +1442,7 @@ var DGE_IMG_LIVRAISON="data:image/jpg;base64,/9j/4AAQSkZJRgABAQEAeAB4AAD/4gG4SUN
 
 var DGE_DATA={devis:[],commande:[],livraison:[]};
 (function(){try{var _v=localStorage.getItem("bts3_dgeData");if(_v)DGE_DATA=JSON.parse(_v);}catch(e){}})();
-function saveDGEData(){try{localStorage.setItem("bts3_dgeData",JSON.stringify(DGE_DATA));}catch(e){}}
+function saveDGEData(){try{localStorage.setItem("bts3_dgeData",JSON.stringify(DGE_DATA));}catch(e){}if(typeof pushNow==='function')pushNow();}
 var DGE_OPEN_TYPE=null;
 
 function rdge(){
@@ -1737,6 +1778,7 @@ function updateServicesXlsx(inp){
 
    EDT=arr;
    try{localStorage.setItem('bts3_edt',JSON.stringify(EDT));}catch(e){}
+   if(typeof pushNow==='function')pushNow();
    render();
    const totH=arr.reduce((s,d)=>s+d.bts1_h+d.bts2_h,0);
    alert('✅ Répartition mise à jour.\n\n'+arr.length+' enseignant(s) — '+totH+' h au total.');
@@ -2963,6 +3005,7 @@ function saveClassLabel(classe){
  if(!v)return;
  CLASS_BLOCK_LABELS[classe]=v;
  try{localStorage.setItem('bts3_classBlockLabels',JSON.stringify(CLASS_BLOCK_LABELS));}catch(e){}
+ if(typeof pushNow==='function')pushNow();
  closeClassLabelEdit();
  document.getElementById('tab_content').innerHTML=rstudents();
  loadFilesPanel('students');
@@ -3044,6 +3087,7 @@ function deleteStu(classe,id){
  if(!confirm('Supprimer '+nom+' ?'))return;
  STUDENTS_DB[classe]=(STUDENTS_DB[classe]||[]).filter(function(x){return x.id!==id;});
  try{localStorage.setItem('bts3_stuDB',JSON.stringify(STUDENTS_DB));}catch(e){}
+ if(typeof pushNow==='function')pushNow();
  renderClassModal(classe,document.getElementById('stu_srch')?.value||'');
  showToast('🗑️ '+nom+' supprime(e)');
 }
@@ -3089,6 +3133,7 @@ function saveStuAdd(classe,id){
  if(!STUDENTS_DB[classe])STUDENTS_DB[classe]=[];
  STUDENTS_DB[classe].push(s);
  try{localStorage.setItem('bts3_stuDB',JSON.stringify(STUDENTS_DB));}catch(e){}
+ if(typeof pushNow==='function')pushNow();
  document.getElementById('person-modal').innerHTML='';
  openClassModal(classe);
  showToast('✅ '+nom+' ajoute(e)');
@@ -3157,6 +3202,7 @@ function saveStuEdit(classe,id){
   regime:(document.getElementById('sef_regime')?.value||'').trim(),
  };
  try{localStorage.setItem('bts3_stuOverrides',JSON.stringify(STU_OVERRIDES));}catch(e){}
+ if(typeof pushNow==='function')pushNow();
  closeStuEdit();
  renderClassModal(CUR_CLASS_MODAL,'');
  showToast('✅ Fiche élève mise à jour');
@@ -3166,6 +3212,7 @@ function resetStuEdit(classe,id){
  if(!confirm('Remettre cet élève à ses données d\'origine ?'))return;
  delete STU_OVERRIDES[`${classe}_${id}`];
  try{localStorage.setItem('bts3_stuOverrides',JSON.stringify(STU_OVERRIDES));}catch(e){}
+ if(typeof pushNow==='function')pushNow();
  closeStuEdit();
  renderClassModal(CUR_CLASS_MODAL,'');
  showToast('↩️ Fiche réinitialisée');
@@ -3298,7 +3345,10 @@ if(!CAND_DB.length){
  try{localStorage.setItem('bts3_candDB',JSON.stringify(CAND_DB));}catch(e){}
 }
 
-function saveCandDB(){try{localStorage.setItem('bts3_candDB',JSON.stringify(CAND_DB));}catch(e){}}
+function saveCandDB(){
+ try{localStorage.setItem('bts3_candDB',JSON.stringify(CAND_DB));}catch(e){}
+ pushNow();
+}
 
 // Couleur par statut
 function candStatusColor(s){
@@ -3341,7 +3391,7 @@ let INTERV_LABELS={
  '2diet': {titre:'BTS 2DIET — Année 2026-2027',sous:'Interventions extérieures — Mercredi PM'},
 };
 try{const v=localStorage.getItem('bts3_intervLabels');if(v)Object.assign(INTERV_LABELS,JSON.parse(v));}catch(e){}
-function saveIntervLabels(){try{localStorage.setItem('bts3_intervLabels',JSON.stringify(INTERV_LABELS));}catch(e){}}
+function saveIntervLabels(){try{localStorage.setItem('bts3_intervLabels',JSON.stringify(INTERV_LABELS));}catch(e){}if(typeof pushNow==='function')pushNow();}
 
 // Créneaux 1DIET — jeudis disponibles 2026-2027 (hors vacances + stage 8/02→5/03/2027)
 let SLOTS_1DIET=[{id:0,date:"03/09/2026",jour:"Jeudi",classes:"1DIET",nom:"",prenom:"",tel:"",mail:"",theme:"",creneau:"PM (13h30-17h30)",besoins:"",statut:"Disponible",notes:""},
@@ -3377,7 +3427,7 @@ let SLOTS_1DIET=[{id:0,date:"03/09/2026",jour:"Jeudi",classes:"1DIET",nom:"",pre
 {id:30,date:"17/06/2027",jour:"Jeudi",classes:"1DIET",nom:"",prenom:"",tel:"",mail:"",theme:"",creneau:"PM (13h30-17h30)",besoins:"",statut:"Disponible",notes:""},
 {id:31,date:"24/06/2027",jour:"Jeudi",classes:"1DIET",nom:"",prenom:"",tel:"",mail:"",theme:"",creneau:"PM (13h30-17h30)",besoins:"",statut:"Disponible",notes:""}];
 try{const v=localStorage.getItem('bts3_slots1diet');if(v)SLOTS_1DIET=JSON.parse(v);}catch(e){}
-function saveSlots1(){try{localStorage.setItem('bts3_slots1diet',JSON.stringify(SLOTS_1DIET));}catch(e){}}
+function saveSlots1(){try{localStorage.setItem('bts3_slots1diet',JSON.stringify(SLOTS_1DIET));}catch(e){}if(typeof pushNow==='function')pushNow();}
 
 // Créneaux 2DIET — mercredis disponibles 2026-2027 (hors vacances + stages)
 let SLOTS_2DIET=[{id:0,date:"02/09/2026",jour:"Mercredi",classes:"2DIET",nom:"",prenom:"",tel:"",mail:"",theme:"",creneau:"PM (13h30-17h30)",besoins:"",statut:"Disponible",notes:""},
@@ -3410,7 +3460,7 @@ let SLOTS_2DIET=[{id:0,date:"02/09/2026",jour:"Mercredi",classes:"2DIET",nom:"",
 {id:27,date:"16/06/2027",jour:"Mercredi",classes:"2DIET",nom:"",prenom:"",tel:"",mail:"",theme:"",creneau:"PM (13h30-17h30)",besoins:"",statut:"Disponible",notes:""},
 {id:28,date:"23/06/2027",jour:"Mercredi",classes:"2DIET",nom:"",prenom:"",tel:"",mail:"",theme:"",creneau:"PM (13h30-17h30)",besoins:"",statut:"Disponible",notes:""}];
 try{const v=localStorage.getItem('bts3_slots2diet');if(v)SLOTS_2DIET=JSON.parse(v);}catch(e){}
-function saveSlots2(){try{localStorage.setItem('bts3_slots2diet',JSON.stringify(SLOTS_2DIET));}catch(e){}}
+function saveSlots2(){try{localStorage.setItem('bts3_slots2diet',JSON.stringify(SLOTS_2DIET));}catch(e){}if(typeof pushNow==='function')pushNow();}
 
 // Couleurs statut
 const ISTAT={
@@ -4183,7 +4233,7 @@ if(!PROJ_DB.length){
  ];
  try{localStorage.setItem('bts3_projDB',JSON.stringify(PROJ_DB));}catch(e){}
 }
-function saveProjDB(){try{localStorage.setItem('bts3_projDB',JSON.stringify(PROJ_DB));}catch(e){}}
+function saveProjDB(){try{localStorage.setItem('bts3_projDB',JSON.stringify(PROJ_DB));}catch(e){}if(typeof pushNow==='function')pushNow();}
 
 const PROJ_COLORS=['#2E75B6','#C55A11','#7B3F9E','#2d7a2d','#8B1A1A','#1a6a6a','#935116','#4A5568','#1a4a8a','#6a3a6a'];
 function projColor(id){return PROJ_COLORS[id%PROJ_COLORS.length];}
@@ -4685,6 +4735,7 @@ async function handlePresFile(inp){
   const fid=await dbAdd('pres_main',f.name,f.type,f.size,bytes);
   PRES_FILE_INFO={fileId:fid,name:f.name,size:f.size,date:Date.now(),ext};
   try{localStorage.setItem('bts3_presFileInfo',JSON.stringify(PRES_FILE_INFO));}catch(e){}
+  if(typeof pushNow==='function')pushNow();
   document.getElementById('pres-viewer-zone').innerHTML=buildPresViewer();
   if(ext==='pdf')setTimeout(()=>restorePresFile(),200);
   showToast('✅ Fichier importé : '+f.name);
@@ -4894,6 +4945,7 @@ function doRenameTab(id,isCustom){
   const t=TABS.find(t=>t.id===id);
   if(t)t.lb=newName;
   try{localStorage.setItem('bts3_tabLabels',JSON.stringify(S.tabLabels));}catch(e){}
+  if(typeof pushNow==='function')pushNow();
  }
  closeM();render();
 }
