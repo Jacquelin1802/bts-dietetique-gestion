@@ -569,7 +569,7 @@ const SYNC_KEYS = [
   'bts3_slots1diet','bts3_slots2diet','bts3_stuDB','bts3_stuOverrides',
   'bts3_tabLabels','bts3_tabsVisible','bts3_dgeData','bts3_pres'
 ];
-const SYNC_INTERVAL = 15000; // 15 secondes
+const SYNC_INTERVAL = 30000; // 30 secondes (le push immédiat après sauvegarde couvre déjà l'essentiel)
 let _syncEnabled = true; // URL Apps Script configurée
 let _syncTimer = null;
 let _pullTimer = null;
@@ -591,23 +591,46 @@ function setSyncBadge(msg, color) {
 // silent=true : utilisé pour les vérifications automatiques en arrière-plan,
 // n'affiche pas l'état intermédiaire "Sync…" pour éviter un badge qui
 // clignote sans arrêt. Les vraies actions utilisateur (pushNow) restent visibles.
+let _pushInFlight = false;
+let _pushQueued = false;
 async function syncPush(silent) {
   if (!_syncEnabled) return;
   if (!navigator.onLine) { setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)'); return; }
+  // Verrou anti-chevauchement : si un envoi est déjà en cours, on note juste
+  // qu'un nouvel envoi sera nécessaire une fois celui-ci terminé, plutôt que
+  // de laisser partir deux requêtes en parallèle (qui pourraient arriver au
+  // serveur dans le désordre et faire revenir une version plus ancienne).
+  if (_pushInFlight) { _pushQueued = true; return; }
+  _pushInFlight = true;
   const data = {};
   SYNC_KEYS.forEach(k => { const v = localStorage.getItem(k); if (v) data[k] = v; });
   if (!silent) setSyncBadge('🔄 Sync…', 'rgba(255,200,50,.3)');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
     await fetch(SYNC_API_URL, {
       method: 'POST',
       mode: 'no-cors',
       headers: { 'Content-Type': 'text/plain' },
-      body: JSON.stringify({ action: 'setMultiple', data })
+      body: JSON.stringify({ action: 'setMultiple', data }),
+      signal: controller.signal
     });
+    clearTimeout(timeoutId);
     _lastSync = Date.now();
     setSyncBadge('✅ Synchronisé ' + new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'}), 'rgba(34,197,94,.3)');
   } catch(e) {
-    setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)');
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') {
+      setSyncBadge('⏱️ Serveur trop lent / ne répond pas', 'rgba(239,68,68,.35)');
+    } else {
+      setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)');
+    }
+  } finally {
+    _pushInFlight = false;
+    if (_pushQueued) {
+      _pushQueued = false;
+      syncPush(silent);
+    }
   }
 }
 
@@ -617,8 +640,11 @@ async function syncPull(silent) {
   if (!_syncEnabled) { setSyncBadge('💾 Local uniquement', 'rgba(255,255,255,.15)'); return false; }
   if (!navigator.onLine) { setSyncBadge('📴 Hors ligne', 'rgba(156,163,175,.3)'); return false; }
   if (!silent) setSyncBadge('🔄 Chargement…', 'rgba(255,200,50,.3)');
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), 10000);
   try {
-    const r = await fetch(SYNC_API_URL + '?action=getAll&t=' + Date.now());
+    const r = await fetch(SYNC_API_URL + '?action=getAll&t=' + Date.now(), { signal: controller.signal });
+    clearTimeout(timeoutId);
     if (!r.ok) {
       console.error('[sync] HTTP', r.status, 'lors du pull');
       setSyncBadge('⚠️ Erreur serveur (' + r.status + ')', 'rgba(239,68,68,.35)');
@@ -673,20 +699,35 @@ async function syncPull(silent) {
     }
     return true;
   } catch(e) {
-    console.error('[sync] Exception réseau lors du pull (probablement CORS) :', e);
-    setSyncBadge('📴 Hors ligne — données locales', 'rgba(156,163,175,.3)');
+    clearTimeout(timeoutId);
+    if (e.name === 'AbortError') {
+      console.error('[sync] Délai dépassé (10s) lors du pull — le serveur ne répond pas');
+      setSyncBadge('⏱️ Serveur trop lent / ne répond pas', 'rgba(239,68,68,.35)');
+    } else {
+      console.error('[sync] Exception réseau lors du pull (probablement CORS) :', e);
+      setSyncBadge('📴 Hors ligne — données locales', 'rgba(156,163,175,.3)');
+    }
     return false;
   }
 }
 
 // ── Déclencheur d'envoi immédiat, utilisé par toutes les fonctions save*() ──
-// Contrairement à la minuterie de 15s, celui-ci ne dépend PAS de _firstPullDone :
+// Contrairement à la minuterie de 30s, celui-ci ne dépend PAS de _firstPullDone :
 // une sauvegarde explicite de l'utilisateur doit partir tout de suite.
+// On regroupe (debounce) les appels rapprochés en un seul envoi : si plusieurs
+// actions se suivent en quelques centaines de ms (plusieurs suppressions puis
+// des ajouts), on ne veut envoyer QUE l'état final, pas plusieurs requêtes
+// réseau qui pourraient arriver au serveur dans le désordre et écraser la
+// bonne version avec une version intermédiaire incomplète.
+let _pushDebounceTimer = null;
 function pushNow(){
  _lastLocalEditTime = Date.now();
- if (typeof _syncEnabled!=='undefined' && _syncEnabled && navigator.onLine && typeof syncPush==='function') {
-  syncPush();
- }
+ if (_pushDebounceTimer) clearTimeout(_pushDebounceTimer);
+ _pushDebounceTimer = setTimeout(function(){
+  if (typeof _syncEnabled!=='undefined' && _syncEnabled && navigator.onLine && typeof syncPush==='function') {
+   syncPush();
+  }
+ }, 900);
 }
 
 // ── Démarrer la synchronisation ──
@@ -743,7 +784,7 @@ function startSync() {
       const modalOpen = modalEl && modalEl.innerHTML.trim().length > 0;
       if (!modalOpen) render();
     });
-  }, 20000);
+  }, 30000);
 }
 
 // ── Surcharger sv() pour push automatique à chaque sauvegarde ──
