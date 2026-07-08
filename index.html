@@ -574,6 +574,12 @@ let _syncEnabled = true; // URL Apps Script configurée
 let _syncTimer = null;
 let _pullTimer = null;
 let _lastSync = 0;
+// Horodatage de la dernière modification locale (ajout/suppression/édition).
+// Sert à protéger un changement récent contre un pull qui ramènerait une
+// version distante encore ancienne (ex : une suppression qui "reviendrait"
+// toute seule si le serveur n'a pas encore reçu le push).
+let _lastLocalEditTime = 0;
+const EDIT_PROTECTION_MS = 45000; // 45s de battement après une modif locale
 
 // Afficher le statut de sync dans la bannière
 function setSyncBadge(msg, color) {
@@ -628,6 +634,7 @@ async function syncPull() {
       return false;
     }
     let updated = 0;
+    const recentLocalEdit = (Date.now() - _lastLocalEditTime) < EDIT_PROTECTION_MS;
     SYNC_KEYS.forEach(k => {
       const remoteEntry = d.data[k];
       if (!remoteEntry || !remoteEntry.value) return;
@@ -637,6 +644,13 @@ async function syncPull() {
         updated++;
         return;
       }
+      // Si une modification locale vient d'avoir lieu (moins de 45s), on ne
+      // laisse PAS le pull écraser le local avec une version distante qui
+      // pourrait ne pas encore refléter ce changement (ex: une suppression
+      // qui "reviendrait" toute seule). On laisse le prochain push (déjà
+      // déclenché juste après la modif) mettre le serveur à jour, puis les
+      // pulls suivants redeviendront normaux une fois ce délai passé.
+      if (recentLocalEdit) return;
       if (remoteEntry.value.length > localVal.length) {
         localStorage.setItem(k, remoteEntry.value);
         updated++;
@@ -656,6 +670,7 @@ async function syncPull() {
 // Contrairement à la minuterie de 15s, celui-ci ne dépend PAS de _firstPullDone :
 // une sauvegarde explicite de l'utilisateur doit partir tout de suite.
 function pushNow(){
+ _lastLocalEditTime = Date.now();
  if (typeof _syncEnabled!=='undefined' && _syncEnabled && navigator.onLine && typeof syncPush==='function') {
   syncPush();
  }
