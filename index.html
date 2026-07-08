@@ -638,27 +638,35 @@ async function syncPull(silent) {
     }
     let updated = 0;
     const recentLocalEdit = (Date.now() - _lastLocalEditTime) < EDIT_PROTECTION_MS;
+    // Suivi par clé du dernier horodatage distant appliqué localement,
+    // pour comparer les VRAIES dates de modification plutôt que la longueur
+    // du texte (l'ancienne méthode ignorait à tort les suppressions, qui
+    // raccourcissent toujours les données).
+    let appliedMeta = {};
+    try { appliedMeta = JSON.parse(localStorage.getItem('bts3_meta_applied') || '{}'); } catch(e) {}
     SYNC_KEYS.forEach(k => {
       const remoteEntry = d.data[k];
       if (!remoteEntry || !remoteEntry.value) return;
       const localVal = localStorage.getItem(k);
+      const remoteTs = remoteEntry.updated_at ? Date.parse(remoteEntry.updated_at) : 0;
       if (!localVal) {
         localStorage.setItem(k, remoteEntry.value);
+        appliedMeta[k] = remoteTs;
         updated++;
         return;
       }
       // Si une modification locale vient d'avoir lieu (moins de 45s), on ne
       // laisse PAS le pull écraser le local avec une version distante qui
-      // pourrait ne pas encore refléter ce changement (ex: une suppression
-      // qui "reviendrait" toute seule). On laisse le prochain push (déjà
-      // déclenché juste après la modif) mettre le serveur à jour, puis les
-      // pulls suivants redeviendront normaux une fois ce délai passé.
+      // pourrait ne pas encore refléter ce changement.
       if (recentLocalEdit) return;
-      if (remoteEntry.value.length > localVal.length) {
+      const appliedTs = appliedMeta[k] || 0;
+      if (remoteTs > appliedTs) {
         localStorage.setItem(k, remoteEntry.value);
+        appliedMeta[k] = remoteTs;
         updated++;
       }
     });
+    try { localStorage.setItem('bts3_meta_applied', JSON.stringify(appliedMeta)); } catch(e) {}
     _lastSync = Date.now();
     if (!silent || updated > 0) {
       setSyncBadge(updated > 0 ? ('✅ ' + updated + ' clés chargées') : ('✅ Synchronisé ' + new Date().toLocaleTimeString('fr-FR',{hour:'2-digit',minute:'2-digit'})), 'rgba(34,197,94,.3)');
